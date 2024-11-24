@@ -7,7 +7,7 @@ result_file = args[2]
 
 load("data_files/stan_indiana_covid_sim_data.Rdata")
 load("data_files/zip_code_db.Rdata")
-source("small_area_estimate_helper_functions.R")
+source("code/R/small_area_estimate_helper_functions.R")
 load(sim_data_file)
 #sim_data_100 <- spatial_sim_prop_m
 
