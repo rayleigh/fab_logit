@@ -1,7 +1,5 @@
 library(tidyverse)
 library(brms)
-library(cmdstanr)
-library(boot)
 
 args = commandArgs(trailingOnly=TRUE)
 sim_data_file = args[1]
@@ -9,9 +7,11 @@ result_file = args[2]
 
 load("data_files/stan_indiana_covid_sim_data.Rdata")
 load("data_files/zip_code_db.Rdata")
-source("code/R/small_area_estimate_helper_functions.R")
+source("small_area_estimate_helper_functions.R")
 load(sim_data_file)
-#sim_data_100 <- spatial_sim_prop_m
+
+print(sim_data_file)
+print(result_file)
 
 county_zip_code_info <-
   sapply(reduced_covid_data$zip, function(zip_code) {
@@ -29,21 +29,15 @@ mrpN_county_positive_prop_info <-
   positive_prop_info %>% group_by(zip) %>%
   summarize(pos_prop = sum(prop * total_mrp) / sum(total_mrp))
 
-new_stan_results <- 
-    brm(positive | trials(positive + negative) ~ (1 | sex) + (1 | race) + (1 | age) + (1 | zip),
-        data = reduced_covid_data, family = binomial(link="logit"),
-        prior = set_prior(horseshoe(scale_slab = 1e9), class = "sd"),
-        control = list(adapt_delta = 0.99), cores = 4, iter = 0)
-data_list <- standata(new_stan_results)
-data_list$M_4 = max(data_list$J_4)
-rm(new_stan_results)
-
-mod <- cmdstan_model("code/stan/default_brms_stan_code.stan")
 coverage_m <- matrix(0, nrow = 100, ncol = 30)
 prop_coverage_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
 prop_coverage_length_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
 adj_prop_coverage_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
 adj_prop_coverage_length_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
+adj_prop_obs_coverage_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
+adj_prop_obs_coverage_length_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
+adj_prop_post_coverage_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
+adj_prop_post_coverage_length_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
 bias_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
 zip_coverage_m <- matrix(0, nrow = 100, ncol = 30)
 zip_coverage_length_m <- matrix(0, nrow = 100, ncol = 30)
@@ -53,82 +47,103 @@ mrp_zip_coverage_m <- matrix(0, nrow = 100, ncol = 30)
 mrp_zip_coverage_length_m <- matrix(0, nrow = 100, ncol = 30)
 adj_mrp_zip_coverage_m <- matrix(0, nrow = 100, ncol = 30)
 adj_mrp_zip_coverage_length_m <- matrix(0, nrow = 100, ncol = 30)
+adj_mrp_zip_obs_coverage_m <- matrix(0, nrow = 100, ncol = 30)
+adj_mrp_zip_obs_coverage_length_m <- matrix(0, nrow = 100, ncol = 30)
+adj_mrp_zip_post_coverage_m <- matrix(0, nrow = 100, ncol = 30)
+adj_mrp_zip_post_coverage_length_m <- matrix(0, nrow = 100, ncol = 30)
 
-#prop_coverage_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
-#adj_prop_coverage_m <- matrix(0, nrow = 100, ncol = nrow(reduced_covid_data))
+new_stan_results <- 
+    brm(positive | trials(positive + negative) ~ (1 | sex) + (1 | race) + (1 | age) + (1 | zip),
+        data = reduced_covid_data, family = binomial(link="logit"),
+        prior = set_prior(horseshoe(scale_slab = 1e9), class = "sd"),
+        control = list(adapt_delta = 0.99), cores = 4, iter = 0)
 for (i in 1:100) {
   print(paste0("Iter: ", i))
   sim_reduced_covid_data <- reduced_covid_data
   sim_reduced_covid_data$positive <- sim_data_100[,i]
-  sim_reduced_covid_data$negative <-
+  sim_reduced_covid_data$negative <- 
     sim_reduced_covid_data$total - sim_reduced_covid_data$positive
+  new_stan_results <- 
+    update(new_stan_results,
+	   positive | trials(positive + negative) ~ (1 | sex) + (1 | race) + (1 | age) + (1 | zip),
+        newdata = sim_reduced_covid_data, family = binomial(link="logit"),
+        prior = set_prior(horseshoe(scale_slab = 1e9), class = "sd"),
+        control = list(adapt_delta = 0.95), cores = 4)
 
-  data_list$Y <- sim_data_100[,i]
-  new_stan_results <- mod$sample(
-    data = data_list, adapt_delta = 0.95, max_treedepth = 12,
-    parallel_chains = 4)
-
-  # fit_summary_info <- new_stan_results$summary(
-  #   variables = "post_draws",
-  #   posterior::default_summary_measures(),
-  #   extra_quantiles = ~posterior::quantile2(., probs = c(.0275, .975))
-  # )
-
-  draws_df <- new_stan_results$draws(format = "df")
-  draws_df <- data.matrix(draws_df[, grep("post_draws", colnames(draws_df))])
-  coverage_m[i,] <-
-    post_draws_get_coverage(draws_df, sim_reduced_covid_data)
-  bias_m[i,] <- all_draws_post_prop[1,] - colMeans(draws_df)  
-
-
-  draws_df <- new_stan_results$draws(format = "df")
-  draws_df <- data.matrix(draws_df[, grep("mu", colnames(draws_df))])
+  bias_m[i,] <- all_draws_post_prop[1,] - colMeans(inv.logit(posterior_linpred(new_stan_results)))  
+    
+  coverage_m[i,] <- 
+    rstanarm_results_get_coverage(new_stan_results, sim_reduced_covid_data)
   prop_coverage_info <-
-    post_draws_get_prop_coverage(inv.logit(draws_df), all_draws_post_prop[1,])
+    brms_get_prop_coverage(new_stan_results, all_draws_post_prop[1,])
   prop_coverage_m[i,] <- prop_coverage_info[[1]]
   prop_coverage_length_m[i,] <- prop_coverage_info[[2]]
-  #prop_coverage_m[i,] <-
-  #  post_draws_get_prop_coverage(inv.logit(draws_df), all_draws_post_prop[1,]) 
-  #adj_prop_coverage_m[i,] <-
-  #  post_draws_get_prop_coverage_adjusted(draws_df, all_draws_post_prop[1,], sim_reduced_covid_data) 
-  adj_prop_coverage_info <-
-    post_draws_get_prop_coverage_adjusted(draws_df, all_draws_post_prop[1,], sim_reduced_covid_data)
-  adj_prop_coverage_m[i,] <- adj_prop_coverage_info[[1]]
-  adj_prop_coverage_length_m[i,] <- adj_prop_coverage_info[[2]]
+      adj_prop_coverage_info <-
+    brms_get_prop_coverage_adjusted_multiple(
+      new_stan_results, all_draws_post_prop[1,], sim_reduced_covid_data)
+  adj_prop_coverage_m[i,] <- 
+    adj_prop_coverage_info[[1]][1:ncol(all_draws_post_prop) * 3]
+  adj_prop_coverage_length_m[i,] <- 
+    adj_prop_coverage_info[[2]][1:ncol(all_draws_post_prop) * 3]
+          adj_prop_obs_coverage_m[i,] <- 
+    adj_prop_coverage_info[[1]][1:ncol(all_draws_post_prop) * 3 - 2]
+  adj_prop_obs_coverage_length_m[i,] <- 
+    adj_prop_coverage_info[[2]][1:ncol(all_draws_post_prop) * 3 - 2]
+          adj_prop_post_coverage_m[i,] <- 
+     adj_prop_coverage_info[[1]][1:ncol(all_draws_post_prop) * 3 - 1]
+  adj_prop_post_coverage_length_m[i,] <- 
+     adj_prop_coverage_info[[2]][1:ncol(all_draws_post_prop) * 3 - 1]
 
   zip_code_draws <- 
-    post_draws_get_zip_code_draws(draws_df, sim_reduced_covid_data)
+    brms_get_zip_code_draws(new_stan_results, sim_reduced_covid_data)
   prop_coverage_info <-
-    post_draws_get_prop_coverage(
-      inv.logit(zip_code_draws), county_positive_prop_info$pos_prop)
+    post_draws_get_prop_coverage(zip_code_draws, county_positive_prop_info$pos_prop)
   zip_coverage_m[i,] <- prop_coverage_info[[1]]
   zip_coverage_length_m[i,] <- prop_coverage_info[[2]]
-  #prop_coverage_m[i,] <-
-  #  post_draws_get_prop_coverage(inv.logit(draws_df), all_draws_post_prop[1,])
-  #adj_prop_coverage_m[i,] <-
-  #  post_draws_get_prop_coverage_adjusted(draws_df, all_draws_post_prop[1,], sim_reduced_covid_data)
   adj_zip_coverage_info <-
     post_draws_get_prop_coverage_adjusted(
-      zip_code_draws, county_positive_prop_info$pos_prop,
+      logit(zip_code_draws), county_positive_prop_info$pos_prop, 
       aggregate_sim_data(sim_reduced_covid_data))
   adj_zip_coverage_m[i,] <- adj_zip_coverage_info[[1]]
   adj_zip_coverage_length_m[i,] <- adj_zip_coverage_info[[2]]
 
   tmp <- sim_reduced_covid_data
   tmp$total <- tmp$mrpN
-  zip_code_draws <- post_draws_get_zip_code_draws(draws_df, tmp)
+  zip_code_draws <-
+    brms_get_zip_code_draws(new_stan_results, tmp)
   prop_coverage_info <-
-    post_draws_get_prop_coverage(
-      inv.logit(zip_code_draws), mrpN_county_positive_prop_info$pos_prop)
+    post_draws_get_prop_coverage(zip_code_draws, mrpN_county_positive_prop_info$pos_prop)
   mrp_zip_coverage_m[i,] <- prop_coverage_info[[1]]
   mrp_zip_coverage_length_m[i,] <- prop_coverage_info[[2]]
   adj_zip_coverage_info <-
-    post_draws_get_prop_coverage_adjusted(
-      zip_code_draws, mrpN_county_positive_prop_info$pos_prop,
+    post_draws_get_prop_coverage_adjusted_multiple(
+      logit(zip_code_draws), mrpN_county_positive_prop_info$pos_prop,
       aggregate_sim_data(sim_reduced_covid_data))
-  adj_mrp_zip_coverage_m[i,] <- adj_zip_coverage_info[[1]]
-  adj_mrp_zip_coverage_length_m[i,] <- adj_zip_coverage_info[[2]]
+  adj_mrp_zip_coverage_m[i,] <- 
+    adj_zip_coverage_info[[1]][1:ncol(zip_code_draws) * 3]
+  adj_mrp_zip_coverage_length_m[i,] <- 
+    adj_zip_coverage_info[[2]][1:ncol(zip_code_draws) * 3]
+          adj_mrp_zip_obs_coverage_m[i,] <- 
+    adj_zip_coverage_info[[1]][1:ncol(zip_code_draws) * 3 - 2]
+  adj_mrp_zip_obs_coverage_length_m[i,] <- 
+    adj_zip_coverage_info[[2]][1:ncol(zip_code_draws) * 3 - 2]
+          adj_mrp_zip_post_coverage_m[i,] <- 
+    adj_zip_coverage_info[[1]][1:ncol(zip_code_draws) * 3 - 1]
+  adj_mrp_zip_post_coverage_length_m[i,] <- 
+    adj_zip_coverage_info[[2]][1:ncol(zip_code_draws) * 3 - 1]
 }
+warnings()
 
-save(coverage_m, prop_coverage_m, prop_coverage_length_m, adj_prop_coverage_m, adj_prop_coverage_length_m, bias_m, zip_coverage_m, zip_coverage_length_m, adj_zip_coverage_m, adj_zip_coverage_length_m, mrp_zip_coverage_m, mrp_zip_coverage_length_m, adj_mrp_zip_coverage_m, adj_mrp_zip_coverage_length_m, file = result_file)
-#save(coverage_m, prop_coverage_m, adj_prop_coverage_m, prop_coverage_length_m, adj_prop_coverage_length_m, zip_coverage_m, zip_coverage_length_m, adj_zip_coverage_m, adj_zip_coverage_length_m, bias_m, mrp_zip_coverage_m, mrp_zip_coverage_length_m, adj_mrp_zip_coverage_m, adj_mrp_zip_coverage_length_m, file = result_file)
+save(coverage_m, prop_coverage_m,
+     prop_coverage_length_m,
+     adj_prop_coverage_m, adj_prop_coverage_length_m,
+     adj_prop_obs_coverage_m, adj_prop_obs_coverage_length_m,
+     adj_prop_post_coverage_m, adj_prop_post_coverage_length_m,
+     bias_m, zip_coverage_m, zip_coverage_length_m,
+     adj_zip_coverage_m, adj_zip_coverage_length_m,
+     mrp_zip_coverage_m, mrp_zip_coverage_length_m,
+     adj_mrp_zip_coverage_m, adj_mrp_zip_coverage_length_m,
+     adj_mrp_zip_obs_coverage_m, adj_mrp_zip_obs_coverage_length_m,
+     adj_mrp_zip_post_coverage_m, adj_mrp_zip_post_coverage_length_m,
+     file = result_file)
+

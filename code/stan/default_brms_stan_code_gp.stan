@@ -32,6 +32,18 @@ data {
   int prior_only;  // should the likelihood be ignored?
   // array[N_4] zip_code_distance;
   matrix[N_4, N_4] zip_code_distance;
+  real<lower=0> l;
+  real<lower=0> sigma;
+}
+transformed data {
+  matrix[N_4, N_4] K = 
+    sigma^2 * exp(-square(zip_code_distance) / (2 * l^2));
+  matrix[N_4, N_4] chol_K;
+
+  for (n in 1:N_4) {
+    K[n, n] = K[n, n] + 1e-3;
+  }
+  chol_K = cholesky_decompose(K);
 }
 parameters {
   real Intercept;  // temporary intercept for centered predictors
@@ -44,8 +56,6 @@ parameters {
   // vector<lower=0>[M_4] sd_4_tilde;  // group-level standard deviations
   array[M_4] vector[N_4] z_4;  // standardized group-level effects
   // real<lower=0> tau;
-  real<lower=0> l;
-  real<lower=0> sigma;
 }
 transformed parameters {
   real lprior = 0;  // prior contributions to the log posterior
@@ -54,23 +64,18 @@ transformed parameters {
   vector[N_3] r_3_1;  // actual group-level effects
   vector[N_4] r_4_1;  // actual group-level effects
   // matrix[N_4, N_4] K = gp_exp_quad_cov(x, sigma, l);
-  matrix[N_4, N_4] K = sigma^2 * exp(-square(zip_code_distance) / (2 * l^2));
+  
 
-  for (n in 1:N_4) {
-    K[n, n] = K[n, n] + 1e-6;
-  }
   // area_effect = cholesky_decompose(K) * z_4[1];
   
   // vector<lower=0>[M_4] sd_4;  // group-level standard deviations
-  
 
-  // sd_4 = sd_4_tilde .* tau;
   r_1_1 = (sd_1[1] * (z_1[1]));
   r_2_1 = (sd_2[1] * (z_2[1]));
   r_3_1 = (sd_3[1] * (z_3[1]));
   //r_4_1 = (sd_4[1] * (z_4[1]));
   // r_4_1 = (sd_4 .* (z_4[1]));
-  r_4_1 = cholesky_decompose(K) * z_4[1];
+  r_4_1 = chol_K * z_4[1];
   lprior += student_t_lpdf(Intercept | 3, 0, 2.5);
   lprior += student_t_lpdf(sd_1 | 3, 0, 2.5)
     - 1 * student_t_lccdf(0 | 3, 0, 2.5);
@@ -99,8 +104,8 @@ model {
   target += std_normal_lpdf(z_2[1]);
   target += std_normal_lpdf(z_3[1]);
   target += std_normal_lpdf(z_4[1]);
-  l ~ exponential(1);
-  sigma ~ exponential(1);
+  //l ~ exponential(1);
+  //sigma ~ exponential(1);
   // tau ~ exponential(1);
   // sd_4_tilde ~ exponential(1);
 }

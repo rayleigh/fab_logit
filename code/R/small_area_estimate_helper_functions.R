@@ -26,7 +26,7 @@ optim_deriv_intervals <- function(s_j, mean_prop, alpha, n) {
 get_coverage_risk_boundary <- function(
   start_s_j, end_s_j, theta, alpha, n, prior_mean, prior_sd, min_coverage_risk) {
 
-  while(abs(start_s_j - end_s_j) > 1e-6) {
+  while(abs(start_s_j - end_s_j) > 1e-4) {
     try_s_j <- (start_s_j + end_s_j) / 2
     tmp_risk <-
       calc_coverage_risk(try_s_j, theta = theta, alpha = alpha,
@@ -85,7 +85,7 @@ get_s_j_function <- function(alpha, n, prior_mean, prior_sd, spline = T) {
     get_opt_s_j(theta, alpha, n, prior_mean, prior_sd)
   })
   if (spline) {
-    return(smooth.spline(theta_list, s_j_info, cv = T))
+    return(smooth.spline(theta_list, s_j_info, all.knots = T))
   }
   s_j_info
 }
@@ -210,7 +210,6 @@ derive_intervals_theta <- function(theta, alpha, s_j, n) {
 
 }
 
-#From https://stackoverflow.com/questions/71594430/how-to-find-where-the-interval-of-continuous-numbers-starts-and-ends
 find_longest_cont_interval <- function(interested_inds) {
   
   group_id <- cumsum(c(1, diff(interested_inds)) != 1)
@@ -218,10 +217,13 @@ find_longest_cont_interval <- function(interested_inds) {
   return(split_inds[[which.max(sapply(split_inds, length))]])
 }
 
-derive_fab_intervals <- function(y_prop, alpha, n, prior_mean, prior_sd) {
+derive_fab_intervals <- function(
+  y_prop, alpha, n, prior_mean, prior_sd, s_j_spline = NULL) {
 
   theta_list <- seq(0, 1, by = 0.01)
-  s_j_spline <- get_s_j_function(alpha, n, prior_mean, prior_sd)
+  if (is.null(s_j_spline)) {
+    s_j_spline <- get_s_j_function(alpha, n, prior_mean, prior_sd)
+  }
   s_j_vals <- predict(s_j_spline, theta_list)$y
   s_j_vals[s_j_vals > 1 - 1e-9] = 1 - 1e-9
   s_j_vals[s_j_vals < 1e-9] = 1e-9
@@ -233,7 +235,6 @@ derive_fab_intervals <- function(y_prop, alpha, n, prior_mean, prior_sd) {
             y_prop <= interval_vals[2,])
   interested_inds <-
     find_longest_cont_interval(interested_inds)
-  ci <- c(0, 1)
   ci <- c(0, 1)
   ind_info <- c(min(interested_inds), max(interested_inds))
   if (ind_info[1] > 1) {
@@ -251,10 +252,48 @@ derive_fab_intervals <- function(y_prop, alpha, n, prior_mean, prior_sd) {
   return(ci)
 }
 
-derive_fab_intervals_no_spline <- function(y_prop, alpha, n, prior_mean, prior_sd) {
+derive_fab_intervals_multiple_y <- function(y_prop_v, alpha, n, prior_mean, prior_sd) {
 
   theta_list <- seq(0, 1, by = 0.01)
-  s_j_vals <- get_s_j_function(alpha, n, prior_mean, prior_sd, F)
+  s_j_spline <- get_s_j_function(alpha, n, prior_mean, prior_sd)
+  s_j_vals <- predict(s_j_spline, theta_list)$y
+  s_j_vals[s_j_vals > 1 - 1e-9] = 1 - 1e-9
+  s_j_vals[s_j_vals < 1e-9] = 1e-9
+  interval_vals <- sapply(1:length(s_j_vals), function(i) {
+    derive_intervals_theta(theta_list[i], alpha, s_j_vals[i], n)
+  })
+
+  ci_m <- sapply(y_prop_v, function(y_prop) {
+    interested_inds <-
+      which(interval_vals[1,] <= y_prop &
+              y_prop <= interval_vals[2,])
+    interested_inds <-
+      find_longest_cont_interval(interested_inds)
+    ci <- c(0, 1)
+    ind_info <- c(min(interested_inds), max(interested_inds))
+    if (ind_info[1] > 1) {
+      ci[1] <-
+        refine_end_point_theta(
+          theta_list[ind_info[1]], theta_list[ind_info[1] - 1],
+          y_prop, alpha, n, s_j_spline, 1)
+    }
+    if (ind_info[2] < length(seq(0, 1, by = 0.01))) {
+      ci[2] <-
+        refine_end_point_theta(
+          theta_list[ind_info[2]], theta_list[ind_info[2] + 1],
+          y_prop, alpha, n, s_j_spline, 2)
+    }
+    return(ci)
+  })
+  return(ci_m)
+}
+
+derive_fab_intervals_no_spline <- function(y_prop, alpha, n, prior_mean, prior_sd, s_j_vals = NULL) {
+
+  theta_list <- seq(0, 1, by = 0.01)
+  if (is.null(s_j_vals)) {
+    s_j_vals <- get_s_j_function(alpha, n, prior_mean, prior_sd, F)
+  }
   interval_vals <- sapply(1:length(s_j_vals), function(i) {
     derive_intervals_theta(theta_list[i], alpha, s_j_vals[i], n)
   })
@@ -304,10 +343,11 @@ brms_get_zip_code_draws <- function(new_stan_results, sim_reduced_covid) {
   zip_draws <- matrix(0, nrow = nrow(post_prob), ncol = length(zip_code_v))
   for (i in 1:length(zip_code_v)) {
 
-    interested_inds <- which(zip_code_v == zip_code_v[i])
-    zip_draws[, i] <-
-      rowSums(post_prob[, interested_inds, drop = F] *
-        sim_reduced_covid_data$total[interested_inds]) /
+    interested_inds <- which(sim_reduced_covid$zip == zip_code_v[i])
+    zip_draws[, i] <- 
+      rowSums(sweep(post_prob[, interested_inds, drop = F],
+                    2, sim_reduced_covid_data$total[interested_inds],
+                    "*")) /
           sum(sim_reduced_covid_data$total[interested_inds])
   }
   zip_draws[zip_draws < 1e-9] = 1e-9
@@ -321,19 +361,22 @@ post_draws_get_zip_code_draws <- function(draws_df, sim_reduced_covid) {
   zip_draws <- matrix(0, nrow = nrow(draws_df), ncol = length(zip_code_v))
   for (i in 1:length(zip_code_v)) {
 
-    interested_inds <- which(zip_code_v == zip_code_v[i])
+    interested_inds <- which(sim_reduced_covid$zip == zip_code_v[i])
     zip_draws[, i] <-
-      rowSums(inv.logit(draws_df[, interested_inds, drop = F]) *
-                sim_reduced_covid_data$total[interested_inds]) /
-      sum(sim_reduced_covid_data$total[interested_inds])
+      rowSums(sweep(inv.logit(draws_df[, interested_inds, drop = F]),
+                    2, sim_reduced_covid$total[interested_inds], "*")) /
+      sum(sim_reduced_covid$total[interested_inds])
   }
+  zip_draws[zip_draws < 1e-9] = 1e-9
+  zip_draws[zip_draws > 1 - 1e-9] = 1 - 1e-9
   return(logit(zip_draws))
 }
 
 aggregate_sim_data <- function(sim_reduced_covid) {
 
    tmp <- sim_reduced_covid %>% group_by(zip) %>%
-     summarize(pos = sum(positive), tot = sum(total))
+     summarize(pos = sum(positive), tot = sum(total)) %>%
+     arrange(zip)
    tmp$positive = tmp$pos
    tmp$total = tmp$tot
    return(tmp)
@@ -379,6 +422,14 @@ post_draws_get_coverage <- function(post_draws, sim_reduced_covid_data) {
 
 rstanarm_results_get_all_coverage <- function(new_stan_results, sim_reduced_covid_data) {
 
+  # post_count_by_zip <- apply(posterior_predict(new_stan_results), 1, function(row) {
+  #   tmp <- as.data.frame(cbind(sim_reduced_covid_data$zip, row))
+  #   colnames(tmp) <- c("zip", "count")
+  #   tmp %>% group_by(zip) %>% summarize(case_count = sum(count))
+  # })
+  # post_count_by_zip <- sapply(post_count_by_zip, function(count_info) {
+  #   count_info$case_count
+  # })
   post_count_credible_interval <-
     apply(posterior_predict(new_stan_results), 2, function(row) quantile(row, probs = c(0.025, 0.975)))
   sim_zip_count <- sim_reduced_covid_data %>%
@@ -390,8 +441,18 @@ rstanarm_results_get_all_coverage <- function(new_stan_results, sim_reduced_covi
 
 post_draws_get_all_coverage <- function(post_draws, sim_reduced_covid_data) {
 
+  # post_count_by_zip <- apply(post_draws, 1, function(row) {
+  #   tmp <- as.data.frame(cbind(sim_reduced_covid_data$zip, row))
+  #   colnames(tmp) <- c("zip", "count")
+  #   tmp %>% group_by(zip) %>% summarize(case_count = sum(count))
+  # })
+  # post_count_by_zip <- sapply(post_count_by_zip, function(count_info) {
+  #   count_info$case_count
+  # })
   post_count_credible_interval <-
     apply(post_draws, 2, function(row) quantile(row, probs = c(0.025, 0.975)))
+  # sim_zip_count <- sim_reduced_covid_data %>%
+  #   group_by(zip) %>% summarize(case_count = sum(positive))
   return(
     (sim_reduced_covid_data$positive > post_count_credible_interval[1,] &
        sim_reduced_covid_data$positive < post_count_credible_interval[2,]) * 1)
@@ -407,25 +468,72 @@ brms_get_prop_coverage <- function(new_stan_results, gen_prop_val) {
 	 ci[2,] - ci[1,]))
 }
 
-brms_get_prop_coverage_adjusted <- function(new_stan_results, gen_prop_val, sim_reduced_covid) {
+brms_get_prop_coverage_adjusted <- function(new_stan_results, gen_prop_val, sim_reduced_covid, post = F, obs = F) {
 
-  post_prob <- inv.logit(posterior_linpred(new_stan_results))
-  post_prob[post_prob < 1e-9] = 1e-9
-  post_prob[post_prob > 1 - 1e-9] = 1 - 1e-9
-  post_mean = colMeans(logit(post_prob))
-  post_sd <- apply(logit(post_prob), 2, sd)
+  #post_prob <- inv.logit(posterior_linpred(new_stan_results))
+  #post_prob[post_prob < 1e-9] = 1e-9
+  #post_prob[post_prob > 1 - 1e-9] = 1 - 1e-9
+  #post_mean = colMeans(logit(post_prob))
+  #post_sd <- apply(logit(post_prob), 2, sd)
+
+  post_logit_prob <- posterior_linpred(new_stan_results)
+  post_mean = colMeans(post_logit_prob)
+  post_sd <- apply(post_logit_prob, 2, sd)
+
   obs_prop <- sim_reduced_covid$positive / sim_reduced_covid$total
-  ci <- sapply(1:length(post_mean), function(i) {
+  ci <- do.call(cbind, mclapply(1:length(post_mean), function(i) {
+  #ci <- sapply(1:length(post_mean), function(i) {
       print(i)
-      if (sim_reduced_covid$total[i] < 3) {
+      if (!obs) {
+        if (post || sim_reduced_covid$total[i] < 3) {
          obs_prop[i] = inv.logit(post_mean[i])
+        }
       }
-      derive_fab_intervals_no_spline(obs_prop[i], 0.05, sim_reduced_covid$total[i], post_mean[i], post_sd[i])
-  })
+      derive_fab_intervals(obs_prop[i], 0.05, sim_reduced_covid$total[i], post_mean[i], post_sd[i])
+  #})
+  }, mc.cores = 4))
   
   return(list((gen_prop_val > ci[1,] & gen_prop_val < ci[2,]) * 1,
 	      ci[2,] - ci[1,]))
 
+}
+
+brms_get_prop_coverage_adjusted_multiple <- function(
+    new_stan_results, gen_prop_val, sim_reduced_covid, post = F, obs = F) {
+
+  #post_prob <- inv.logit(posterior_linpred(new_stan_results))
+  #post_prob[post_prob < 1e-9] = 1e-9
+  #post_prob[post_prob > 1 - 1e-9] = 1 - 1e-9
+  #post_mean = colMeans(logit(post_prob))
+  #post_sd <- apply(logit(post_prob), 2, sd)
+
+  post_logit_prob <- posterior_linpred(new_stan_results)
+  post_mean = colMeans(post_logit_prob)
+  post_sd <- apply(post_logit_prob, 2, sd)
+
+  obs_prop <- sim_reduced_covid$positive / sim_reduced_covid$total
+  ci <- do.call(cbind, mclapply(1:length(post_mean), function(i) {
+    #ci <- sapply(1:length(post_mean), function(i) {
+    print(i)
+    # if (!obs) {
+    #   if (post || sim_reduced_covid$total[i] < 3) {
+    #     obs_prop[i] = inv.logit(post_mean[i])
+    #   }
+    # }
+    y_list <- c(obs_prop[i], inv.logit(post_mean[i]))
+    ci_intervals <- derive_fab_intervals_multiple_y(
+      y_list, 0.05, sim_reduced_covid$total[i], post_mean[i], post_sd[i])
+    if (sim_reduced_covid$total[i] > 3) {
+      ci_intervals <- cbind(ci_intervals, ci_intervals[,1])
+    } else {
+      ci_intervals <- cbind(ci_intervals, ci_intervals[,2])
+    }
+    ci_intervals
+    #})
+  }, mc.cores = 4))
+  gen_prop_val <- rep(gen_prop_val, each = 3)
+  return(list((gen_prop_val > ci[1,] & gen_prop_val < ci[2,]) * 1,
+              ci[2,] - ci[1,]))
 }
 
 post_draws_get_prop_coverage <- function(post_draws, gen_prop_val) {
@@ -433,27 +541,61 @@ post_draws_get_prop_coverage <- function(post_draws, gen_prop_val) {
   ci <- apply(post_draws, 2, function(col) {
     quantile(col, probs = c(0.025, 0.975))
   })
+  #return((gen_prop_val > ci[1,] & gen_prop_val < ci[2,]) * 1)
   return(
     list((gen_prop_val > ci[1,] & gen_prop_val < ci[2,]) * 1,
 	 ci[2,] - ci[1,]))
 }
 
-post_draws_get_prop_coverage_adjusted <- function(post_draws, gen_prop_val, sim_reduced_covid) {
+post_draws_get_prop_coverage_adjusted <- function(post_draws, gen_prop_val, sim_reduced_covid, post = F, obs = F) {
 
   post_mean = colMeans(post_draws)
   post_sd <- apply(post_draws, 2, sd)
   obs_prop <- sim_reduced_covid$positive / sim_reduced_covid$total
-  ci <- sapply(1:length(post_mean), function(i) {
+  #ci <- sapply(1:length(post_mean), function(i) {
+  ci <- do.call(cbind, mclapply(1:length(post_mean), function(i) {
     print(i)
-    if (sim_reduced_covid$total[i] < 3) {
-       obs_prop[i] = inv.logit(post_mean[i]) 
+    if (!obs) {
+      if (post || sim_reduced_covid$total[i] < 3) {
+         obs_prop[i] = inv.logit(post_mean[i]) 
+      }
     }
-    derive_fab_intervals_no_spline(obs_prop[i], 0.05, sim_reduced_covid$total[i], post_mean[i], post_sd[i])
-  })
+    derive_fab_intervals(obs_prop[i], 0.05, sim_reduced_covid$total[i], post_mean[i], post_sd[i])
+  #})
+  }, mc.cores = 4))
+  #return((gen_prop_val > ci[1,] & gen_prop_val < ci[2,]) * 1)
   return(
     list((gen_prop_val > ci[1,] & gen_prop_val < ci[2,]) * 1,
 	 ci[2,] - ci[1,]))
 }
+
+post_draws_get_prop_coverage_adjusted_multiple <- function(
+    post_draws, gen_prop_val, sim_reduced_covid, post = F, obs = F) {
+
+  post_mean = colMeans(post_draws)
+  post_sd <- apply(post_draws, 2, sd)
+  obs_prop <- sim_reduced_covid$positive / sim_reduced_covid$total
+  #ci <- sapply(1:length(post_mean), function(i) {
+  ci <- do.call(cbind, mclapply(1:length(post_mean), function(i) {
+    print(i)
+    y_list <- c(obs_prop[i], inv.logit(post_mean[i]))
+    ci_intervals <- derive_fab_intervals_multiple_y(
+      y_list, 0.05, sim_reduced_covid$total[i], post_mean[i], post_sd[i])
+    if (sim_reduced_covid$total[i] > 3) {
+      ci_intervals <- cbind(ci_intervals, ci_intervals[,1])
+    } else {
+      ci_intervals <- cbind(ci_intervals, ci_intervals[,2])
+    }
+    #})
+    return(ci_intervals)
+  }, mc.cores = 4))
+  #return((gen_prop_val > ci[1,] & gen_prop_val < ci[2,]) * 1)
+  gen_prop_val <- rep(gen_prop_val, each = 3)
+  return(
+    list((gen_prop_val > ci[1,] & gen_prop_val < ci[2,]) * 1,
+         ci[2,] - ci[1,]))
+}
+
 
 get_direct_coverage_for_sim <- function(mean_prop, n, obs_prop) {
 
@@ -493,6 +635,8 @@ get_zip_info <- function(reduced_covid_data, zip_code_db, sim_data_100, all_draw
   mrpN_county_positive_prop_info <-
     positive_prop_info %>% group_by(zip) %>%
     summarize(pos_prop = sum(prop * total_mrp) / sum(total_mrp))
+  
+  # aggregate_sim_data(sim_reduced_covid_data)
   
   county_reduced_covid_data <- reduced_covid_data
   tmp <- aggregate_sim_data(county_reduced_covid_data)
