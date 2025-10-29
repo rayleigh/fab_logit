@@ -77,7 +77,8 @@ model {
     mu += Intercept;
     for (n in 1:N) {
       // add more terms to the linear predictor
-      mu[n] += r_1_1[J_1[n]] * Z_1_1[n] + r_2_1[J_2[n]] * Z_2_1[n] + r_3_1[J_3[n]] * Z_3_1[n] + r_4_1[J_4[n]] * Z_4_1[n];
+      mu[n] += r_1_1[J_1[n]] * Z_1_1[n] + r_2_1[J_2[n]] * Z_2_1[n] + r_3_1[J_3[n]] * Z_3_1[n] * (J_3[n] - 1) + r_4_1[J_4[n]] * Z_4_1[n];
+      //mu[n] += r_1_1[J_1[n]] * Z_1_1[n] + r_2_1[J_2[n]] * Z_2_1[n] + r_3_1[J_3[n]] * Z_3_1[n] + r_4_1[J_4[n]] * Z_4_1[n];
     }
     target += binomial_logit_lpmf(Y | trials, mu);
   }
@@ -87,8 +88,8 @@ model {
   target += std_normal_lpdf(z_2[1]);
   target += std_normal_lpdf(z_3[1]);
   target += std_normal_lpdf(z_4[1]);
-  tau ~ exponential(1);
-  sd_4_tilde ~ exponential(1);
+  tau ~ normal(0, 3);
+  sd_4_tilde ~ normal(0, 1);
 }
 generated quantities {
   // actual population-level intercept
@@ -100,7 +101,8 @@ generated quantities {
     mu += Intercept;
     for (n in 1:N) {
       // add more terms to the linear predictor
-      mu[n] += r_1_1[J_1[n]] * Z_1_1[n] + r_2_1[J_2[n]] * Z_2_1[n] + r_3_1[J_3[n]] * Z_3_1[n] + r_4_1[J_4[n]] * Z_4_1[n];
+      mu[n] += r_1_1[J_1[n]] * Z_1_1[n] + r_2_1[J_2[n]] * Z_2_1[n] + r_3_1[J_3[n]] * Z_3_1[n] * (J_3[n] - 1) + r_4_1[J_4[n]] * Z_4_1[n];
+      //mu[n] += r_1_1[J_1[n]] * Z_1_1[n] + r_2_1[J_2[n]] * Z_2_1[n] + r_3_1[J_3[n]] * Z_3_1[n] + r_4_1[J_4[n]] * Z_4_1[n];
       post_draws[n] = binomial_rng(trials[n], inv_logit(mu[n]));
     }
   }

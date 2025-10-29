@@ -5,21 +5,12 @@ data {
   array[N] int n_sample;
   int<lower=0> K;
   matrix[N, K] X;
-  int<lower=1> N_pop;
-  int<lower=0> K_pop;
-  matrix[N_pop, K_pop] X_pop;
   int<lower=1> N_race;
   array[N] int<lower=1, upper=N_race> J_race;
-  int<lower=1> N_race_pop;
-  array[N_pop] int<lower=1, upper=N_race_pop> J_race_pop;
   int<lower=1> N_zip;
   array[N] int<lower=1, upper=N_zip> J_zip;
-  int<lower=1> N_zip_pop;
-  array[N_pop] int<lower=1, upper=N_zip_pop> J_zip_pop;
   int<lower=1> N_age;
   array[N] int<lower=1, upper=N_age> J_age;
-  int<lower=1> N_age_pop;
-  array[N_pop] int<lower=1, upper=N_age_pop> J_age_pop;
   real<lower=0> sens;
   real<lower=0> spec;
   matrix[N_zip, N_zip] zip_code_distance;
@@ -82,7 +73,6 @@ model {
 }
 
 generated quantities { 
-  vector<lower=0, upper=1>[N_pop] p_pop = inv_logit(Intercept + X_pop * beta + a_race[J_race_pop] + a_zip[J_zip_pop] + a_age[J_age_pop]);
   array[N] int<lower = 0> y_rep = binomial_rng(n_sample, p_sample);
   vector[N] log_lik;
   for (n in 1:N) {
